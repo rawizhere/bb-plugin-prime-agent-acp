@@ -15,10 +15,10 @@ export default async function plugin(bb: BbPluginApi) {
     icon: "./icons/prime-agent.svg",
     strings: {
       signInHint:
-        "Ensure Prime Agent is installed and authenticated via `prime-agent` CLI.",
+        "Ensure Prime Agent is installed and authenticated (`prime-agent /login` or `bb prime-agent install`).",
       expiredHint:
         "Prime Agent session expired or needs re-authentication. Check your API keys with `prime-agent`.",
-      installUrl: "https://github.com/PrimeIntellect-ai/prime-agent",
+      installUrl: "https://app.primeintellect.ai/prime-agent/install.sh",
       iconTint: { light: "#9333EA", dark: "#C084FC" },
     },
     experimental_visibility: "installed",
@@ -76,10 +76,29 @@ export default async function plugin(bb: BbPluginApi) {
         summary: "List available models discovered by Prime Agent",
         usage: "bb prime-agent models [--json]",
       },
+      {
+        name: "install",
+        summary: "Download and install the official Prime Agent binary",
+        usage: "bb prime-agent install",
+      },
     ],
     async run(argv) {
       const json = argv.includes("--json");
       const isModels = argv.includes("models");
+      const isInstall = argv.includes("install");
+
+      if (isInstall) {
+        try {
+          const { stdout, stderr } = await execFileAsync(launcherPath, ["--install"]);
+          return { exitCode: 0, stdout: stdout || stderr };
+        } catch (err: any) {
+          return {
+            exitCode: 1,
+            stderr: `Failed to install Prime Agent: ${err.message}`,
+            stdout: "",
+          };
+        }
+      }
 
       if (isModels) {
         try {
@@ -121,7 +140,7 @@ export default async function plugin(bb: BbPluginApi) {
         ready: resolvedBinary !== null,
         hint:
           resolvedBinary === null
-            ? "Install Prime Agent via `npm install -g @primeintellect/prime-agent` or make sure `prime-agent` is on PATH."
+            ? "Prime Agent is not yet installed. Run `bb prime-agent install` to download it automatically."
             : "Ready. Prime Agent appears in bb provider list and agent selectors.",
       };
 

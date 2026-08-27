@@ -4,13 +4,16 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
-function findPrimeAgentBinary() {
+function findPrimeAgentBinary(allowAutoInstall = true) {
+  const home = homedir();
   const candidates = [
     process.env.PRIME_AGENT_BIN,
+    path.join(home, ".local/bin/prime-agent"),
+    path.join(home, ".prime/bin/prime-agent"),
+    path.join(home, ".prime/agent/bin/prime-agent"),
     "/opt/homebrew/bin/prime-agent",
     "/usr/local/bin/prime-agent",
     "/usr/bin/prime-agent",
-    path.join(homedir(), ".local/bin/prime-agent"),
   ].filter(Boolean);
 
   for (const c of candidates) {
@@ -23,16 +26,47 @@ function findPrimeAgentBinary() {
     if (resolved && existsSync(resolved)) return resolved;
   } catch {}
 
+  if (allowAutoInstall) {
+    return installPrimeAgentSync();
+  }
+
   return null;
+}
+
+function installPrimeAgentSync() {
+  try {
+    process.stderr.write("[bb-plugin-prime-agent-acp] prime-agent not found. Auto-installing from official release...\n");
+    execFileSync("sh", ["-c", "curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh"], {
+      stdio: "inherit",
+      env: process.env,
+      timeout: 180000,
+    });
+    return findPrimeAgentBinary(false);
+  } catch (err) {
+    process.stderr.write(`[bb-plugin-prime-agent-acp] Auto-install failed: ${err.message}\n`);
+    return null;
+  }
 }
 
 const argv = process.argv.slice(2);
 
+// Direct install command
+if (argv[0] === "--install" || (argv[0] === "install")) {
+  const bin = installPrimeAgentSync();
+  if (bin) {
+    console.log(`Prime Agent successfully installed at: ${bin}`);
+    process.exit(0);
+  } else {
+    console.error("Failed to install Prime Agent.");
+    process.exit(1);
+  }
+}
+
 // If asked to list models:
 if (argv.includes("--list-models") || (argv[0] === "model" && argv[1] === "list")) {
-  const bin = findPrimeAgentBinary();
+  const bin = findPrimeAgentBinary(true);
   if (!bin) {
-    console.error("prime-agent binary not found");
+    console.error("prime-agent binary not found and auto-install failed.");
     process.exit(1);
   }
 
@@ -67,9 +101,9 @@ if (argv.includes("--list-models") || (argv[0] === "model" && argv[1] === "list"
 }
 
 // Normal launch in ACP mode:
-const bin = findPrimeAgentBinary();
+const bin = findPrimeAgentBinary(true);
 if (!bin) {
-  console.error("prime-agent binary not found");
+  console.error("prime-agent binary not found and auto-install failed.");
   process.exit(1);
 }
 
