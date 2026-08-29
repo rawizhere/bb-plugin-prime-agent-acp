@@ -5,12 +5,23 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 ## Features
 
 - **Native ACP Provider:** Registers provider `acp-prime-agent` in bb IDE with official branding and theme support.
-- **Zero-Config Auto Provisioning:** If `prime-agent` is not installed on the system, the launcher automatically downloads and sets up the official release binary upon first run.
+- **Explicit Installation:** Prime Agent is never installed implicitly. First run never downloads anything — you install the binary once with `bb prime-agent install --yes`, which downloads and runs Prime Intellect's official installer script.
 - **Model Catalog & Reasoning:** Supports dynamic model discovery (`--list-models`), reasoning levels (`--thinking`), and model routing across OpenCode Zen, OpenRouter, and custom providers.
 - **CLI Commands:**
   - `bb prime-agent status` — Inspect provider, launcher, and resolved binary status.
   - `bb prime-agent models` — List discovered models with free model annotations.
-  - `bb prime-agent install` — One-step download and install of official `prime-agent` binary.
+  - `bb prime-agent install --yes` — Download and install the official `prime-agent` binary.
+
+## What the plugin runs
+
+- Selecting the Prime Agent provider launches the locally installed `prime-agent` binary in ACP mode.
+- Thread content is processed by Prime Intellect's Prime Agent (the vendor behind
+  [app.primeintellect.ai](https://app.primeintellect.ai)); model traffic goes to the
+  providers you configure (OpenCode Zen, OpenRouter, or a custom provider).
+- The plugin itself makes no network calls from its own code. The only download is
+  the explicit `bb prime-agent install --yes` command, which fetches
+  <https://app.primeintellect.ai/prime-agent/install.sh> and runs it in a minimal
+  environment (PATH and HOME only — no daemon secrets are passed to the script).
 
 ## Installation
 
@@ -42,8 +53,8 @@ bb plugin install . --yes
 # Check provider status
 bb prime-agent status
 
-# Install or update the prime-agent binary
-bb prime-agent install
+# Install or update the prime-agent binary (explicit download, requires --yes)
+bb prime-agent install --yes
 
 # List available models
 bb prime-agent models

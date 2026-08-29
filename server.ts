@@ -6,6 +6,7 @@ import { type BbPluginApi } from "@get-bb/plugin-sdk";
 const execFileAsync = promisify(execFile);
 
 const launcherPath = fileURLToPath(new URL("./bin/launch.mjs", import.meta.url));
+const INSTALL_URL = "https://app.primeintellect.ai/prime-agent/install.sh";
 
 export default async function plugin(bb: BbPluginApi) {
   bb.providers.register({
@@ -78,29 +79,42 @@ export default async function plugin(bb: BbPluginApi) {
       },
       {
         name: "install",
-        summary: "Download and install the official Prime Agent binary",
-        usage: "bb prime-agent install",
+        summary: "Download and install the official Prime Agent binary (requires --yes)",
+        usage: "bb prime-agent install --yes",
       },
     ],
     async run(argv) {
       const json = argv.includes("--json");
-      const isModels = argv.includes("models");
-      const isInstall = argv.includes("install");
+      const cmd = argv[0];
 
-      if (isInstall) {
-        try {
-          const { stdout, stderr } = await execFileAsync(launcherPath, ["--install"]);
-          return { exitCode: 0, stdout: stdout || stderr };
-        } catch (err: any) {
+      if (cmd === "install") {
+        if (!argv.includes("--yes")) {
           return {
             exitCode: 1,
-            stderr: `Failed to install Prime Agent: ${err.message}`,
+            stderr: [
+              "This downloads and executes a shell script from Prime Intellect:",
+              `  ${INSTALL_URL}`,
+              "It installs the official prime-agent binary into your home directory.",
+              "",
+              "Re-run with --yes to confirm: `bb prime-agent install --yes`",
+            ].join("\n"),
             stdout: "",
+          };
+        }
+        try {
+          const { stdout, stderr } = await execFileAsync(launcherPath, ["--install", "--yes"]);
+          return { exitCode: 0, stdout: stdout || stderr || "Prime Agent installed.", stderr: "" };
+        } catch (err: any) {
+          const stderr = err?.stderr?.toString?.() ?? "";
+          return {
+            exitCode: 1,
+            stderr: `Failed to install Prime Agent: ${err.message ?? err}${stderr ? `\n${stderr}` : ""}`,
+            stdout: err?.stdout?.toString?.() ?? "",
           };
         }
       }
 
-      if (isModels) {
+      if (cmd === "models") {
         try {
           const { stdout } = await execFileAsync(launcherPath, ["--list-models"]);
           if (json) {
@@ -118,12 +132,13 @@ export default async function plugin(bb: BbPluginApi) {
         } catch (err: any) {
           return {
             exitCode: 1,
-            stderr: `Failed to query models: ${err.message}`,
+            stderr: `Failed to query models: ${err.message ?? err}`,
             stdout: "",
           };
         }
       }
 
+      // status (default)
       let resolvedBinary: string | null = null;
       try {
         const { stdout } = await execFileAsync("which", ["prime-agent"]);
@@ -140,7 +155,7 @@ export default async function plugin(bb: BbPluginApi) {
         ready: resolvedBinary !== null,
         hint:
           resolvedBinary === null
-            ? "Prime Agent is not yet installed. Run `bb prime-agent install` to download it automatically."
+            ? "Prime Agent is not yet installed. Run `bb prime-agent install --yes` to download it."
             : "Ready. Prime Agent appears in bb provider list and agent selectors.",
       };
 
