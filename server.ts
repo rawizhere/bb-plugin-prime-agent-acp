@@ -1,7 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { type BbPluginApi } from "@get-bb/plugin-sdk";
@@ -10,44 +7,6 @@ const execFileAsync = promisify(execFile);
 
 const launcherPath = fileURLToPath(new URL("./bin/launch.mjs", import.meta.url));
 const INSTALL_URL = "https://app.primeintellect.ai/prime-agent/install.sh";
-
-const PROVIDER_ENV_VARS: Record<string, string> = {
-  openrouter: "OPENROUTER_API_KEY",
-  opencode: "OPENCODE_API_KEY",
-  "opencode-go": "OPENCODE_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-  google: "GEMINI_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  groq: "GROQ_API_KEY",
-  cerebras: "CEREBRAS_API_KEY",
-  "prime-inference": "PRIME_API_KEY",
-};
-
-function readAuthProviders(): { path: string; exists: boolean; providers: string[] } {
-  const agentDir = process.env.PRIME_AGENT_CODING_AGENT_DIR ?? join(homedir(), ".prime", "agent");
-  const path = join(agentDir, "auth.json");
-  if (!existsSync(path)) {
-    return { path, exists: false, providers: [] };
-  }
-  try {
-    const data: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof data !== "object" || data === null) {
-      return { path, exists: true, providers: [] };
-    }
-    const providers = Object.entries(data as Record<string, unknown>)
-      .filter(([, value]) => {
-        if (typeof value !== "object" || value === null) return false;
-        const type = (value as Record<string, unknown>).type;
-        return type === "api_key" || type === "oauth";
-      })
-      .map(([key]) => key);
-    return { path, exists: true, providers };
-  } catch {
-    return { path, exists: true, providers: [] };
-  }
-}
 
 export default async function plugin(bb: BbPluginApi) {
   bb.providers.register({
@@ -86,18 +45,11 @@ export default async function plugin(bb: BbPluginApi) {
         modelCli: {
           listArgs: ["--list-models"],
           selectFlag: "--model",
-          primaryModels: [
-            "opencode-go/ox-alpha-free",
-            "opencode/ox-alpha-free",
-            "openrouter/z-ai/glm-5.2:free",
-            "openrouter/minimax/minimax-m3:free",
-            "openrouter/minimax/minimax-m3",
-            "opencode/deepseek-v4-flash",
-          ],
+          primaryModels: ["openrouter/minimax/minimax-m3:free"],
         },
         reasoningCli: {
           flag: "--thinking",
-          supportedLevels: ["low", "high", "max"],
+          supportedLevels: ["low", "medium", "high", "xhigh", "max"],
           defaultLevel: "high",
         },
       },
@@ -122,11 +74,6 @@ export default async function plugin(bb: BbPluginApi) {
         name: "install",
         summary: "Download and install the official Prime Agent binary (requires --yes)",
         usage: "bb prime-agent install --yes",
-      },
-      {
-        name: "auth",
-        summary: "Show configured provider credentials for Prime Agent",
-        usage: "bb prime-agent auth [--json]",
       },
     ],
     async run(argv) {
@@ -182,70 +129,6 @@ export default async function plugin(bb: BbPluginApi) {
             stdout: "",
           };
         }
-      }
-
-      if (cmd === "auth") {
-        const auth = readAuthProviders();
-        const detected = new Set([
-          ...auth.providers,
-          ...Object.entries(PROVIDER_ENV_VARS)
-            .filter(([, envVar]) => Boolean(process.env[envVar]))
-            .map(([provider]) => provider),
-        ]);
-        const rows = [...detected].sort().map((provider) => {
-          const envVar = PROVIDER_ENV_VARS[provider];
-          return {
-            provider,
-            authFile: auth.providers.includes(provider),
-            env: Boolean(envVar && process.env[envVar]),
-            envVar: envVar ?? null,
-          };
-        });
-        const openrouter = rows.find((row) => row.provider === "openrouter");
-        const notes: string[] = [];
-        notes.push(`Auth file: ${auth.path}${auth.exists ? "" : " (missing)"}`);
-        if (auth.providers.length > 0) {
-          notes.push(`Auth file providers: ${auth.providers.join(", ")}`);
-        }
-        if (openrouter?.authFile || openrouter?.env) {
-          notes.push(
-            "OpenRouter: a key is configured. If turns fail with `403 Key limit exceeded`," +
-              " the key's total usage limit is exhausted. Replace it with a new key or fund the workspace.",
-          );
-          notes.push(
-            "If you see `No API key found for openrouter` after a 403, Prime Agent marks the" +
-              " failed key stale in a long-running daemon. Replace the key with a different value (or" +
-              " start a fresh thread) to clear it.",
-          );
-        } else {
-          notes.push(
-            "OpenRouter: no key configured. Add an openrouter entry to ~/.prime/agent/auth.json," +
-              " export OPENROUTER_API_KEY in the environment bb starts from, or run `prime-agent` and `/login`.",
-          );
-        }
-        if (json) {
-          return { exitCode: 0, stdout: JSON.stringify({ ok: true, auth, providers: rows, notes }, null, 2) };
-        }
-        const lines = [
-          "Auth status for Prime Agent",
-          `Auth file: ${auth.path}${auth.exists ? "" : " (missing)"}`,
-        ];
-        if (auth.providers.length > 0) {
-          lines.push(`Auth file providers: ${auth.providers.join(", ")}`);
-        }
-        lines.push("");
-        if (rows.length === 0) {
-          lines.push("No known provider credentials found.", "");
-        } else {
-          for (const row of rows) {
-            lines.push(
-              `${row.provider.padEnd(16)} auth-file: ${row.authFile ? "yes" : "no"}    env: ${row.env ? "yes (" + row.envVar + ")" : "no"}`,
-            );
-          }
-          lines.push("");
-        }
-        lines.push(...notes);
-        return { exitCode: 0, stdout: lines.join("\n") };
       }
 
       // Default to status command
