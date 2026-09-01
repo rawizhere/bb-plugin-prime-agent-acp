@@ -1,14 +1,9 @@
 #!/usr/bin/env node
-// Launcher for the Prime Agent ACP provider.
-//
-// This script never installs Prime Agent implicitly. Finding the binary is a
-// read-only lookup; installation happens only through the explicit
-// `bb prime-agent install` command (which requires `--yes` and prints the
-// URL before downloading).
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import readline from "node:readline";
 
 const INSTALL_URL = "https://app.primeintellect.ai/prime-agent/install.sh";
 
@@ -32,18 +27,11 @@ function findPrimeAgentBinary() {
     const out = execFileSync("which", ["prime-agent"], { encoding: "utf8" });
     const resolved = out.trim().split("\n")[0];
     if (resolved && existsSync(resolved)) return resolved;
-  } catch {
-    // not on PATH
-  }
+  } catch {}
 
   return null;
 }
 
-// A minimal environment for the downloaded installer script. The bb
-// server/daemon environment routinely holds API keys and tokens; none of
-// them should reach a script fetched over the network. The installer also
-// honours PRIME_AGENT_DOWNLOAD_BASE_URL, so deliberately not passing it
-// keeps the download pinned to the official URL above.
 function installerEnv() {
   const env = {};
   if (process.env.PATH) env.PATH = process.env.PATH;
@@ -54,7 +42,7 @@ function installerEnv() {
 function installPrimeAgentSync() {
   try {
     process.stderr.write(
-      `[bb-plugin-prime-agent-acp] Downloading and installing the official prime-agent binary from ${INSTALL_URL}\n`,
+      `[bb-plugin-prime-agent-acp] Downloading and installing prime-agent from ${INSTALL_URL}\n`,
     );
     execFileSync("sh", ["-c", `curl -fsSL ${INSTALL_URL} | sh`], {
       stdio: "inherit",
@@ -68,14 +56,11 @@ function installPrimeAgentSync() {
   }
 }
 
-// A conservative model id pattern: anything that could smuggle flag syntax
-// (spaces, `--`, quotes, shell metacharacters) is rejected instead of being
-// forwarded as `--model <value>`.
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@%+/-]*$/;
 
 const argv = process.argv.slice(2);
 
-// Direct install command — explicit, confirmed, prints the URL first.
+// Handle explicit install command
 if (argv[0] === "--install" || argv[0] === "install") {
   const yes = argv.includes("--yes");
   if (!yes) {
@@ -100,7 +85,7 @@ if (argv[0] === "--install" || argv[0] === "install") {
   }
 }
 
-// Model listing is read-only: no auto-install here either.
+// Handle model list command
 if (argv.includes("--list-models") || (argv[0] === "model" && argv[1] === "list")) {
   const bin = findPrimeAgentBinary();
   if (!bin) {
@@ -147,7 +132,7 @@ if (argv.includes("--list-models") || (argv[0] === "model" && argv[1] === "list"
   process.exit(0);
 }
 
-// Normal launch in ACP mode — requires an already-installed binary.
+// Launch prime-agent in ACP mode
 const bin = findPrimeAgentBinary();
 if (!bin) {
   console.error(
@@ -177,7 +162,6 @@ for (let i = 0; i < argv.length; i++) {
   rest.push(a);
 }
 
-// Ensure --mode acp is present
 if (!rest.includes("--mode")) {
   rest.push("--mode", "acp");
 }
@@ -189,5 +173,77 @@ const childArgs = [
   ...(thinking ? ["--thinking", thinking] : []),
 ];
 
-const r = spawnSync(bin, childArgs, { stdio: "inherit" });
-process.exit(r.status ?? 0);
+const child = spawn(bin, childArgs, {
+  stdio: ["pipe", "pipe", "inherit"],
+  env: process.env,
+});
+
+const pendingRequests = new Map();
+
+const stdinRl = readline.createInterface({
+  input: process.stdin,
+  terminal: false,
+});
+
+stdinRl.on("line", (line) => {
+  try {
+    const msg = JSON.parse(line);
+    if (msg && msg.id !== undefined && msg.method) {
+      pendingRequests.set(msg.id, {
+        line,
+        method: msg.method,
+        retries: 0,
+      });
+    }
+  } catch {}
+
+  child.stdin.write(line + "\n");
+});
+
+process.stdin.on("end", () => {
+  child.stdin.end();
+});
+
+const stdoutRl = readline.createInterface({
+  input: child.stdout,
+  terminal: false,
+});
+
+stdoutRl.on("line", (line) => {
+  let isHandled = false;
+  try {
+    const msg = JSON.parse(line);
+    if (msg && msg.id !== undefined && pendingRequests.has(msg.id)) {
+      const req = pendingRequests.get(msg.id);
+      const errStr = msg.error ? JSON.stringify(msg.error) : "";
+
+      // Retry prompt if agent is still settling previous cancellation
+      if (msg.error && errStr.includes("is cancelling")) {
+        if (req.retries < 20) {
+          req.retries++;
+          setTimeout(() => {
+            if (!child.killed && child.stdin.writable) {
+              child.stdin.write(req.line + "\n");
+            }
+          }, 200);
+          isHandled = true;
+        } else {
+          pendingRequests.delete(msg.id);
+        }
+      } else {
+        pendingRequests.delete(msg.id);
+      }
+    }
+  } catch {}
+
+  if (!isHandled) {
+    process.stdout.write(line + "\n");
+  }
+});
+
+child.on("exit", (code, signal) => {
+  process.exit(code ?? (signal ? 1 : 0));
+});
+
+process.on("SIGINT", () => child.kill("SIGINT"));
+process.on("SIGTERM", () => child.kill("SIGTERM"));
