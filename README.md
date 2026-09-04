@@ -25,7 +25,7 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 
 ## Installation
 
-### From Marketplace (once merged)
+### From Marketplace
 
 ```bash
 bb plugin install prime-agent-acp
@@ -59,8 +59,7 @@ bb prime-agent install --yes
 # List available models
 bb prime-agent models
 
-# Show which provider keys are configured (values are never printed)
-bb prime-agent auth
+
 ```
 
 
@@ -84,4 +83,4 @@ The key usually is still in `~/.prime/agent/auth.json`, but Prime Agent marks th
 
 
 
-Check current credential state anytime with `bb prime-agent auth`.
+Check current credential state in `~/.prime/agent/auth.json`, or by running `prime-agent` directly and using `/login`.
