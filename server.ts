@@ -28,9 +28,9 @@ export default async function plugin(bb: BbPluginApi) {
     capabilities: {
       supportsServiceTier: false,
       supportsNativeUserQuestion: false,
-      supportsManualCompaction: false,
-      supportsThreadArchive: false,
-      supportsThreadRename: false,
+      supportsManualCompaction: true,
+      supportsThreadArchive: true,
+      supportsThreadRename: true,
       fork: "none",
       permissionModes: ["accept-edits", "full"],
       reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
