@@ -1,11 +1,20 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type BbPluginApi } from "@get-bb/plugin-sdk";
 
 const execFileAsync = promisify(execFile);
 
-const launcherPath = fileURLToPath(new URL("./bin/launch.mjs", import.meta.url));
+// Path installs run server.ts from the plugin root (bin/ is a sibling);
+// marketplace installs run the built dist/server.js, so the launcher lives
+// one level up. Resolve both.
+function resolveLauncherPath(): string {
+  const local = new URL("./bin/launch.mjs", import.meta.url);
+  if (existsSync(local)) return fileURLToPath(local);
+  return fileURLToPath(new URL("../bin/launch.mjs", import.meta.url));
+}
+const launcherPath = resolveLauncherPath();
 const INSTALL_URL = "https://app.primeintellect.ai/prime-agent/install.sh";
 
 export default async function plugin(bb: BbPluginApi) {
