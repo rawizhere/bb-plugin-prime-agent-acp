@@ -142,6 +142,8 @@ if (!bin) {
 }
 
 const lastValue = (flag) => {
+  const inlineValues = argv.filter((a) => a.startsWith(`${flag}=`));
+  if (inlineValues.length > 0) return inlineValues[inlineValues.length - 1].slice(flag.length + 1);
   const i = argv.lastIndexOf(flag);
   return i !== -1 && i + 1 < argv.length ? argv[i + 1] : undefined;
 };
@@ -159,10 +161,12 @@ for (let i = 0; i < argv.length; i++) {
     i++;
     continue;
   }
+  if (/^--(model|thinking|provider)=/u.test(a)) continue;
   rest.push(a);
 }
 
-if (!rest.includes("--mode")) {
+const hasMode = rest.some((a) => a === "--mode" || a.startsWith("--mode="));
+if (!hasMode) {
   rest.push("--mode", "acp");
 }
 
@@ -193,6 +197,7 @@ stdinRl.on("line", (line) => {
         line,
         method: msg.method,
         retries: 0,
+        at: Date.now(),
       });
     }
   } catch {}
@@ -208,6 +213,15 @@ const stdoutRl = readline.createInterface({
   input: child.stdout,
   terminal: false,
 });
+
+// Drop requests that never got a response so the map cannot grow unbounded.
+const PENDING_TTL_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, req] of pendingRequests) {
+    if (now - req.at > PENDING_TTL_MS) pendingRequests.delete(id);
+  }
+}, 60_000).unref();
 
 stdoutRl.on("line", (line) => {
   let isHandled = false;
