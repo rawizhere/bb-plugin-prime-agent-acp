@@ -33,7 +33,7 @@ export default async function plugin(bb: BbPluginApi) {
       supportsThreadRename: false,
       fork: "none",
       permissionModes: ["accept-edits", "full"],
-      reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
+      reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     },
     composerActions: [],
     experimental_bridgeOptions: {
@@ -49,7 +49,8 @@ export default async function plugin(bb: BbPluginApi) {
         },
         reasoningCli: {
           flag: "--thinking",
-          supportedLevels: ["low", "medium", "high", "xhigh", "max"],
+          supportedLevels: ["none", "low", "medium", "high", "xhigh", "max"],
+          levelValues: { none: "off" },
           defaultLevel: "high",
         },
       },
