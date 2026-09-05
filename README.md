@@ -6,7 +6,18 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 
 - **Native ACP Provider:** Registers provider `acp-prime-agent` in bb IDE with official branding and theme support.
 - **Explicit Installation:** Prime Agent is never installed implicitly. First run never downloads anything — you install the binary once with `bb prime-agent install --yes`, which downloads and runs Prime Intellect's official installer script.
-- **Model Catalog & Reasoning:** Supports dynamic model discovery (`--list-models`), reasoning levels (`--thinking`), and model routing across OpenCode Zen, OpenRouter, and custom providers.
+- **Model Catalog & Reasoning:** Dynamic model discovery (`prime-agent model list`), reasoning levels (`--thinking`), and model routing across OpenCode Zen, OpenRouter, and custom providers.
+- **Prime Agent surfaces in bb:** RLM subagents render as delegation items (name, model, live token count); goals, harness refinements, compaction, and agent-to-agent messages surface as thread state / timeline items via the plugin's ACP dialect (see `dialect/prime-agent-dialect.js`).
+- **Vendored bridge:** the SDK's `provider-bridge-acp.js` is vendored under `vendor/` with the dialect injected by `scripts/apply-dialect.py`, so rebuilds always carry it. After an SDK bump re-vendor:
+
+  ```bash
+  npm install @get-bb/plugin-sdk@<version>
+  cp node_modules/@get-bb/plugin-sdk/dist/provider-bridge-acp.js vendor/
+  python3 scripts/apply-dialect.py
+  python3 scripts/apply-dialect.py --check
+  ```
+
+  `--check` fails loudly when the vendored file drifts from a fresh apply (e.g. the SDK layout changed and the script's anchors no longer match).
 - **CLI Commands:**
   - `bb prime-agent status` — Inspect provider, launcher, and resolved binary status.
   - `bb prime-agent models` — List discovered models with free model annotations.
@@ -25,10 +36,10 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 
 ## Installation
 
-### From Marketplace
+### From a release tag
 
 ```bash
-bb plugin install prime-agent-acp
+bb plugin install git:https://github.com/rawizhere/bb-plugin-prime-agent-acp.git@^0.1.8
 ```
 
 ### From Git

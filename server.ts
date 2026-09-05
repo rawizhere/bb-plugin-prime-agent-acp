@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, copyFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { type BbPluginApi } from "@get-bb/plugin-sdk";
 
 const execFileAsync = promisify(execFile);
@@ -78,14 +79,65 @@ export default async function plugin(bb: BbPluginApi) {
       reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     },
     composerActions: [],
+    // Extension kinds the prime-agent dialect emits (see
+    // dialect/prime-agent-dialect.js). The server validates payloads against
+    // these schemas at ingest and persists a provider/unhandled on a miss.
+    extensionKinds: {
+      goal: {
+        state: z
+          .object({
+            objective: z.string(),
+            status: z.enum(["active", "paused", "budgetLimited", "complete"]),
+            tokenBudget: z.number().nullable(),
+            tokensUsed: z.number(),
+            timeUsedSeconds: z.number(),
+          })
+          .nullable(),
+        item: z.object({
+          transition: z.enum([
+            "started",
+            "resumed",
+            "completed",
+            "paused",
+            "budget_limited",
+            "error",
+          ]),
+          objective: z.string(),
+          status: z.string(),
+          tokenBudget: z.number().nullable(),
+          tokensUsed: z.number(),
+          timeUsedSeconds: z.number(),
+        }),
+      },
+      refinement: {
+        item: z.object({
+          status: z.enum(["complete", "failed"]),
+          summary: z.string().optional(),
+          changes: z.array(z.string()).optional(),
+          error: z.string().optional(),
+        }),
+      },
+      "agent-message": {
+        item: z.object({
+          target: z.string().optional(),
+          deliveryStatus: z.string().optional(),
+          toolCallId: z.string().optional(),
+        }),
+      },
+    },
     experimental_bridgeOptions: {
+      // Resolve the dialect by id (also matched by launcher basename as a
+      // fallback). See dialect/prime-agent-dialect.js.
+      acpDialect: "prime-agent",
       acpLaunchSpec: {
         displayName: "Prime Agent",
         command: LAUNCHER_NAME,
         args: [],
         env: {},
         modelCli: {
-          listArgs: ["--list-models"],
+          // prime-agent 0.9+ removed --list-models; the catalog command is
+          // `prime-agent model list`.
+          listArgs: ["model", "list"],
           selectFlag: "--model",
           primaryModels: ["openrouter/minimax/minimax-m3:free"],
         },
@@ -157,7 +209,7 @@ export default async function plugin(bb: BbPluginApi) {
 
       if (cmd === "models") {
         try {
-          const { stdout } = await execFileAsync(launcherPath, ["--list-models"]);
+          const { stdout } = await execFileAsync(launcherPath, ["model", "list"]);
           if (json) {
             const models = stdout
               .trim()
