@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { type BbPluginApi } from "@get-bb/plugin-sdk";
 
@@ -16,6 +16,39 @@ function resolveLauncherPath(): string {
 }
 const launcherPath = resolveLauncherPath();
 const INSTALL_URL = "https://app.primeintellect.ai/prime-agent/install.sh";
+
+// The ACP launch spec is sent to whatever host daemon executes the thread, so
+// an absolute path resolved on the server breaks on every other machine
+// (remote daemons do not share the server's plugin cache). Register a stable
+// PATH-based launcher name instead and make `bb prime-agent install` place
+// the bundled launch.mjs at that name on the local machine.
+const LAUNCHER_NAME = "prime-agent-acp-launch";
+
+function launcherInstallDirs(): string[] {
+  return [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    `${process.env.HOME ?? ""}/.local/bin`,
+  ].filter((d) => d.length > 0 && !d.startsWith("/.local"));
+}
+
+// Copy the bundled launch.mjs onto PATH under the stable launcher name so the
+// ACP launch spec works on this machine. Remote machines need the same one-time
+// step (the script is plain Node stdlib, so it runs anywhere node exists).
+function installLauncherOnPath(): string {
+  for (const dir of launcherInstallDirs()) {
+    try {
+      if (!existsSync(dir)) continue;
+      const dest = `${dir}/${LAUNCHER_NAME}`;
+      copyFileSync(launcherPath, dest);
+      chmodSync(dest, 0o755);
+      return `Launcher installed at ${dest}`;
+    } catch {
+      // try next dir
+    }
+  }
+  return `WARNING: could not install ${LAUNCHER_NAME} launcher onto PATH; threads on this machine will not start`;
+}
 
 export default async function plugin(bb: BbPluginApi) {
   bb.providers.register({
@@ -48,7 +81,7 @@ export default async function plugin(bb: BbPluginApi) {
     experimental_bridgeOptions: {
       acpLaunchSpec: {
         displayName: "Prime Agent",
-        command: launcherPath,
+        command: LAUNCHER_NAME,
         args: [],
         env: {},
         modelCli: {
@@ -106,7 +139,12 @@ export default async function plugin(bb: BbPluginApi) {
         }
         try {
           const { stdout, stderr } = await execFileAsync(launcherPath, ["--install", "--yes"]);
-          return { exitCode: 0, stdout: stdout || stderr || "Prime Agent installed.", stderr: "" };
+          const launcherMsg = installLauncherOnPath();
+          return {
+            exitCode: 0,
+            stdout: `${stdout || stderr || "Prime Agent installed."}\n${launcherMsg}`,
+            stderr: "",
+          };
         } catch (err: any) {
           const stderr = err?.stderr?.toString?.() ?? "";
           return {
@@ -150,16 +188,28 @@ export default async function plugin(bb: BbPluginApi) {
         resolvedBinary = null;
       }
 
+      let launcherOnPath: string | null = null;
+      try {
+        const { stdout } = await execFileAsync("which", [LAUNCHER_NAME]);
+        launcherOnPath = stdout.split(/\r?\n/u)[0]?.trim() ?? null;
+      } catch {
+        launcherOnPath = null;
+      }
+
       const status = {
         providerId: "acp-prime-agent",
         displayName: "Prime Agent",
         launcher: launcherPath,
+        launcherName: LAUNCHER_NAME,
+        launcherOnPath,
         resolvedBinary,
-        ready: resolvedBinary !== null,
+        ready: resolvedBinary !== null && launcherOnPath !== null,
         hint:
           resolvedBinary === null
             ? "Prime Agent is not yet installed. Run `bb prime-agent install --yes` to download it."
-            : "Ready. Prime Agent appears in bb provider list and agent selectors.",
+            : launcherOnPath === null
+              ? `Prime Agent binary found, but the ${LAUNCHER_NAME} launcher is missing from PATH. Re-run \`bb prime-agent install --yes\` to install it.`
+              : "Ready. Prime Agent appears in bb provider list and agent selectors.",
       };
 
       return {
@@ -170,6 +220,7 @@ export default async function plugin(bb: BbPluginApi) {
               `providerId:     ${status.providerId}`,
               `displayName:    ${status.displayName}`,
               `launcher:       ${status.launcher}`,
+              `launcherOnPath: ${status.launcherOnPath ?? "NOT ON PATH"}`,
               `resolvedBinary: ${status.resolvedBinary ?? "NOT FOUND"}`,
               `status:         ${status.ready ? "READY" : "MISSING BINARY"}`,
               "",
