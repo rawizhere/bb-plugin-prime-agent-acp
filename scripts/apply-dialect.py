@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VENDORED = ROOT / "vendor" / "provider-bridge-acp.js"
 DIALECT = ROOT / "dialect" / "prime-agent-dialect.js"
 
-V2_MARKER = "PRIME_AGENT_ACP_DIALECT_V2"
+V3_MARKER = "PRIME_AGENT_ACP_DIALECT_V3"
 
 DIALECT_MAP_BLOCK = """var DIALECTS_BY_ID = /* @__PURE__ */ new Map([
   [CURSOR_ACP_DIALECT.id, CURSOR_ACP_DIALECT],
@@ -70,7 +70,7 @@ DEFAULT_BLOCK = """      default:
         return unhandledDeltas(rawEvent);"""
 
 SESSION_INFO_CASE = """      case "session_info_update": {
-        // PRIME_AGENT_ACP_DIALECT_V2: dialect-driven session info translation.
+        // PRIME_AGENT_ACP_DIALECT_V3: dialect-driven session info translation.
         // The dialect returns plain-data actions; this case maps them to deltas
         // with translator-internal helpers (streams, turn fallback).
         // A session_info_update without prime-agent meta is intentionally
@@ -125,6 +125,12 @@ SESSION_INFO_CASE = """      case "session_info_update": {
               extensionKind: PRIME_AGENT_GOAL_EXTENSION_KIND,
               payload: sessionInfoAction.payload
             });
+          } else if (sessionInfoAction.op === "autonomousState") {
+            sessionInfoDeltas.push({
+              kind: "extension.state",
+              extensionKind: PRIME_AGENT_AUTONOMOUS_EXTENSION_KIND,
+              payload: sessionInfoAction.payload
+            });
           } else if (sessionInfoAction.op === "info") {
             const infoPresentation = {
               label: { pending: sessionInfoAction.pendingLabel, completed: sessionInfoAction.completedLabel },
@@ -146,6 +152,16 @@ SESSION_INFO_CASE = """      case "session_info_update": {
       }
       default:
         return unhandledDeltas(rawEvent);"""
+
+SESSION_NEW_ANCHOR = """      sessionId = newSession.sessionId;
+      await selectAcpNativeModel({"""
+
+SESSION_NEW_HOOK = """      sessionId = newSession.sessionId;
+      const primeAgentSessionNewMeta = newSession._meta;
+      if (primeAgentIsRecord(primeAgentSessionNewMeta)) {
+        dialect.sessionNew?.(primeAgentSessionNewMeta, { threadId: bbThreadId });
+      }
+      await selectAcpNativeModel({"""
 
 HEADER_RULE = "=" * 76
 
@@ -173,7 +189,7 @@ def generated_header(sdk_version: str) -> str:
 
 
 def build_patched_source(dialect_source: str, sdk_source: str) -> str:
-    if V2_MARKER in sdk_source:
+    if V3_MARKER in sdk_source:
         raise SystemExit("fresh SDK copy already contains the dialect marker; unexpected")
     if sdk_source.count(DIALECT_MAP_BLOCK) != 1:
         raise SystemExit(
@@ -191,8 +207,14 @@ def build_patched_source(dialect_source: str, sdk_source: str) -> str:
             "the SDK layout changed -- re-review scripts/apply-dialect.py anchors"
         )
     patched = patched.replace(DEFAULT_BLOCK, SESSION_INFO_CASE, 1)
-    if V2_MARKER not in patched:
-        raise SystemExit("post-patch invariant failed: V2 marker missing")
+    if patched.count(SESSION_NEW_ANCHOR) != 1:
+        raise SystemExit(
+            f"session/new anchor not unique ({patched.count(SESSION_NEW_ANCHOR)}); "
+            "the SDK layout changed -- re-review scripts/apply-dialect.py anchors"
+        )
+    patched = patched.replace(SESSION_NEW_ANCHOR, SESSION_NEW_HOOK, 1)
+    if V3_MARKER not in patched:
+        raise SystemExit("post-patch invariant failed: V3 marker missing")
     return patched
 
 
@@ -225,8 +247,8 @@ def main() -> None:
         if actual_body == expected:
             print(f"vendor/ is up to date with @get-bb/plugin-sdk@{sdk_version}")
             return
-        if V2_MARKER not in actual:
-            raise SystemExit("vendor/ is missing the dialect (V2 marker absent) -- run apply")
+        if V3_MARKER not in actual:
+            raise SystemExit("vendor/ is missing the dialect (V3 marker absent) -- run apply")
         raise SystemExit(
             f"vendor/ drifts from @get-bb/plugin-sdk@{sdk_version}: re-vendor with "
             "`cp node_modules/@get-bb/plugin-sdk/dist/provider-bridge-acp.js vendor/ "
@@ -234,8 +256,8 @@ def main() -> None:
         )
 
     source = VENDORED.read_text(encoding="utf-8")
-    if V2_MARKER in source:
-        print("already applied (V2 marker present)")
+    if V3_MARKER in source:
+        print("already applied (V3 marker present)")
         return
 
     patched = build_patched_source(dialect_source, source)

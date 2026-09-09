@@ -11,6 +11,10 @@
 //     goal?:       { status, objective, tokenBudget, tokensUsed },
 //     refinement?: { status: "complete"|"failed", summary?, changes?, error? },
 //     agentMessage?: { toolCallId, target, deliveryStatus },
+//     autonomous?: { enabled, continuationsUsed, turnsUsed, tokensUsed, gateAttempt?, gateFailure?, limitReason? },
+//     quiescence?: { outstandingSubagents, remainingAutonomousContinuations },
+//     cwd?: { requested, actual },
+//     heartbeatsChanged?: boolean,
 //   }
 //
 // (see prime-agent dist/modes/acp/acp-events.js; namespace from acp-meta.js)
@@ -23,6 +27,15 @@
 //                   bb conversation)
 //   refinement   -> extension item "prime-agent-acp/refinement"
 //   agentMessage -> extension item "prime-agent-acp/agent-message"
+//   autonomous   -> extension.state "prime-agent-acp/autonomous" plus an item
+//                   whenever the counters or gate state change
+//   quiescence   -> remainingAutonomousContinuations folds into the autonomous
+//                   payload; outstandingSubagents is 0 wherever prime-agent
+//                   publishes it because settlement waits for children
+//   cwd          -> session/new response meta stashed per thread, flushed as a
+//                   one-shot "prime-agent-acp/cwd" item on the first in-turn
+//                   session info update
+//   heartbeatsChanged -> no-op, bb has no provider-agnostic heartbeat surface
 //
 // `sessionInfo(update)` returns plain-data actions; the bridge's
 // session_info_update case (PRIME_AGENT_ACP_DIALECT_V2) turns them into deltas
@@ -41,6 +54,8 @@ var PRIME_AGENT_SUBAGENT_CHILD_REF_PREFIX = "prime-agent:";
 var PRIME_AGENT_SUBAGENT_ITEM_KEY_PREFIX = "prime-agent-subagent-";
 var PRIME_AGENT_REFINEMENT_EXTENSION_KIND = "prime-agent-acp/refinement";
 var PRIME_AGENT_AGENT_MESSAGE_EXTENSION_KIND = "prime-agent-acp/agent-message";
+var PRIME_AGENT_AUTONOMOUS_EXTENSION_KIND = "prime-agent-acp/autonomous";
+var PRIME_AGENT_CWD_EXTENSION_KIND = "prime-agent-acp/cwd";
 
 function primeAgentIsRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -56,6 +71,16 @@ var primeAgentGoalStatusByThread = /* @__PURE__ */ new Map();
 // re-opened when its presentation detail (model / token count) changed, so
 // live token ticking still updates the card.
 var primeAgentDelegationStateByThread = /* @__PURE__ */ new Map();
+
+// Autonomous continuation state, last emitted signature per thread: prime-agent
+// re-sends the autonomous meta on every turn-end and terminal envelope, so the
+// item only re-emits when the counters or gate state actually change.
+var primeAgentAutonomousStateByThread = /* @__PURE__ */ new Map();
+
+// cwd mismatches arrive on the session/new response, before any turn exists to
+// attach an item to. Stash and flush on the first session info update that
+// carries real turn content, which is the turn-end completion update.
+var primeAgentPendingCwdByThread = /* @__PURE__ */ new Map();
 
 function primeAgentDelegationPhase(threadId, childId, isOpening, detail) {
   let byId = primeAgentDelegationStateByThread.get(threadId);
@@ -109,6 +134,27 @@ function primeAgentGoalTransition(previous, next) {
   return void 0;
 }
 
+function primeAgentCompactTokens(tokens) {
+  if (tokens < 1000) {
+    return `${tokens} tok`;
+  }
+  return `${Math.round(tokens / 100) / 10}k tok`;
+}
+
+function primeAgentSessionNew(meta, context) {
+  const namespaced = primeAgentIsRecord(meta) ? meta[PRIME_AGENT_META_NAMESPACE] : void 0;
+  const cwd = primeAgentIsRecord(namespaced) ? namespaced.cwd : void 0;
+  const threadId = primeAgentIsRecord(context) && typeof context.threadId === "string" ? context.threadId : "";
+  if (!primeAgentIsRecord(cwd) || threadId.length === 0) {
+    return void 0;
+  }
+  if (typeof cwd.requested !== "string" || cwd.requested.length === 0 || typeof cwd.actual !== "string" || cwd.actual.length === 0) {
+    return void 0;
+  }
+  primeAgentPendingCwdByThread.set(threadId, { requested: cwd.requested, actual: cwd.actual });
+  return void 0;
+}
+
 function primeAgentSessionInfoActions(update, context) {
   const meta = primeAgentIsRecord(update) ? update._meta : void 0;
   const namespaced = primeAgentIsRecord(meta) ? meta[PRIME_AGENT_META_NAMESPACE] : void 0;
@@ -117,6 +163,23 @@ function primeAgentSessionInfoActions(update, context) {
   }
   const actions = [];
   const threadId = primeAgentIsRecord(context) && typeof context.threadId === "string" ? context.threadId : "";
+  const hasTurnContent = namespaced.subagents !== void 0 || namespaced.compaction !== void 0 || namespaced.goal !== void 0 || namespaced.refinement !== void 0 || namespaced.agentMessage !== void 0 || namespaced.autonomous !== void 0 || namespaced.quiescence !== void 0;
+  const pendingCwd = threadId.length > 0 ? primeAgentPendingCwdByThread.get(threadId) : void 0;
+  if (pendingCwd && hasTurnContent) {
+    primeAgentPendingCwdByThread.delete(threadId);
+    actions.push({
+      op: "info",
+      key: `prime-agent-cwd-${threadId}`,
+      kind: PRIME_AGENT_CWD_EXTENSION_KIND,
+      status: "completed",
+      pendingLabel: "Checking working directory",
+      completedLabel: "Working directory mismatch",
+      icon: "TriangleAlert",
+      title: `requested ${pendingCwd.requested}`,
+      detail: `agent runs in ${pendingCwd.actual}`,
+      payload: { requested: pendingCwd.requested, actual: pendingCwd.actual }
+    });
+  }
   if (Array.isArray(namespaced.subagents)) {
     for (const child of namespaced.subagents) {
       if (!primeAgentIsRecord(child) || typeof child.id !== "string" || child.id.length === 0) {
@@ -229,6 +292,44 @@ function primeAgentSessionInfoActions(update, context) {
       }
     } else {
       primeAgentGoalStatusByThread.delete(threadId);
+    }
+  }
+  if (primeAgentIsRecord(namespaced.autonomous) && namespaced.autonomous.enabled !== false) {
+    const autonomous = namespaced.autonomous;
+    const continuationsUsed = typeof autonomous.continuationsUsed === "number" && Number.isFinite(autonomous.continuationsUsed) ? Math.max(0, Math.trunc(autonomous.continuationsUsed)) : 0;
+    const turnsUsed = typeof autonomous.turnsUsed === "number" && Number.isFinite(autonomous.turnsUsed) ? Math.max(0, Math.trunc(autonomous.turnsUsed)) : 0;
+    const tokensUsed = typeof autonomous.tokensUsed === "number" && Number.isFinite(autonomous.tokensUsed) ? Math.max(0, Math.trunc(autonomous.tokensUsed)) : 0;
+    const quiescence = primeAgentIsRecord(namespaced.quiescence) ? namespaced.quiescence : void 0;
+    const remainingContinuations = quiescence !== void 0 && typeof quiescence.remainingAutonomousContinuations === "number" && Number.isFinite(quiescence.remainingAutonomousContinuations) ? Math.max(0, Math.trunc(quiescence.remainingAutonomousContinuations)) : void 0;
+    const gateFailure = typeof autonomous.gateFailure === "string" && autonomous.gateFailure.length > 0 ? autonomous.gateFailure : void 0;
+    const limitReason = typeof autonomous.limitReason === "string" && autonomous.limitReason.length > 0 ? autonomous.limitReason : void 0;
+    const payload = {
+      enabled: true,
+      continuationsUsed,
+      turnsUsed,
+      tokensUsed,
+      ...(remainingContinuations !== void 0 ? { remainingContinuations } : {}),
+      ...(gateFailure !== void 0 ? { gateFailure } : {}),
+      ...(limitReason !== void 0 ? { limitReason } : {})
+    };
+    actions.push({ op: "autonomousState", payload });
+    const signature = JSON.stringify(payload);
+    if (primeAgentAutonomousStateByThread.get(threadId) !== signature) {
+      primeAgentAutonomousStateByThread.set(threadId, signature);
+      const counts = remainingContinuations === void 0 ? `${continuationsUsed} continuations` : `${continuationsUsed} of ${continuationsUsed + remainingContinuations} continuations`;
+      const failed = gateFailure !== void 0 || limitReason !== void 0;
+      actions.push({
+        op: "info",
+        key: `prime-agent-autonomous-${threadId}`,
+        kind: PRIME_AGENT_AUTONOMOUS_EXTENSION_KIND,
+        status: failed ? "failed" : "completed",
+        pendingLabel: "Autonomous continuations",
+        completedLabel: gateFailure !== void 0 ? "Autonomous gate failed" : limitReason !== void 0 ? "Autonomous limit reached" : "Autonomous continuations",
+        icon: failed ? "CircleAlert" : "Repeat",
+        title: void 0,
+        detail: gateFailure ?? limitReason ?? `${counts} · ${primeAgentCompactTokens(tokensUsed)}`,
+        payload
+      });
     }
   }
   if (primeAgentIsRecord(namespaced.refinement)) {
@@ -362,6 +463,7 @@ function primeAgentCommandResult(event) {
 
 var PRIME_AGENT_ACP_DIALECT = {
   id: "prime-agent",
+  sessionNew: primeAgentSessionNew,
   sessionInfo: primeAgentSessionInfoActions,
   toolIdentity: primeAgentToolIdentity,
   commandResult: primeAgentCommandResult

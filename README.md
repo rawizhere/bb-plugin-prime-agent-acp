@@ -7,7 +7,7 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 - **Native ACP Provider:** Registers provider `acp-prime-agent` in bb IDE with official branding and theme support.
 - **Explicit Installation:** Prime Agent is never installed implicitly. First run never downloads anything — you install the binary once with `bb prime-agent install --yes`, which downloads and runs Prime Intellect's official installer script.
 - **Model Catalog & Reasoning:** Dynamic model discovery (`prime-agent model list`), reasoning levels (`--thinking`), and model routing across OpenCode Zen, OpenRouter, and custom providers.
-- **Prime Agent surfaces in bb:** RLM subagents render as delegation items (name, model, live token count); goals, harness refinements, compaction, and agent-to-agent messages surface as thread state / timeline items via the plugin's ACP dialect (see `dialect/prime-agent-dialect.js`).
+- **Prime Agent surfaces in bb:** RLM subagents render as delegation items (name, model, live token count); goals, harness refinements, compaction, and agent-to-agent messages surface as thread state / timeline items via the plugin's ACP dialect (see `dialect/prime-agent-dialect.js`). Autonomous continuation counters and gate failures surface as extension state plus timeline items; a session cwd mismatch is reported as a one-shot warning item.
 - **Vendored bridge:** the SDK's `provider-bridge-acp.js` is vendored under `vendor/` with the dialect injected by `scripts/apply-dialect.py`, so rebuilds always carry it. After an SDK bump re-vendor:
 
   ```bash
@@ -39,7 +39,7 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 ### From a release tag
 
 ```bash
-bb plugin install git:https://github.com/rawizhere/bb-plugin-prime-agent-acp.git@^0.1.8
+bb plugin install git:https://github.com/rawizhere/bb-plugin-prime-agent-acp.git@^0.1.9
 ```
 
 ### From Git

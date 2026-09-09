@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-prime-agent-acp",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "type": "module",
   "engines": {
     "bb": ">=0.42",
@@ -16,7 +16,7 @@
     "host": "./host.ts"
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "^0.4.47",
+    "@get-bb/plugin-sdk": "^0.4.50",
     "zod": "^4.5.4"
   },
   "devDependencies": {
