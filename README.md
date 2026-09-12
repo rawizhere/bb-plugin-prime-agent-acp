@@ -5,9 +5,9 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 ## Features
 
 - **Native ACP Provider:** Registers provider `acp-prime-agent` in bb IDE with official branding and theme support.
-- **Explicit Installation:** Prime Agent is never installed implicitly. First run never downloads anything — you install the binary once with `bb prime-agent install --yes`, which downloads and runs Prime Intellect's official installer script.
+- **Explicit Installation:** the plugin never installs Prime Agent implicitly, and the first run downloads nothing. You install the binary once with `bb prime-agent install --yes`, which downloads and runs Prime Intellect's official installer script.
 - **Model Catalog & Reasoning:** Dynamic model discovery (`prime-agent model list`), reasoning levels (`--thinking`), and model routing across OpenCode Zen, OpenRouter, and custom providers.
-- **Prime Agent surfaces in bb:** RLM subagents render as delegation items (name, model, live token count); goals, harness refinements, compaction, and agent-to-agent messages surface as thread state / timeline items via the plugin's ACP dialect (see `dialect/prime-agent-dialect.js`). Autonomous continuation counters and gate failures surface as extension state plus timeline items; a session cwd mismatch is reported as a one-shot warning item.
+- **Prime Agent surfaces in bb:** RLM subagents render as delegation items (name, model, live token count); goals, harness refinements, compaction, and agent-to-agent messages surface as thread state and timeline items via the plugin's ACP dialect (see `dialect/prime-agent-dialect.js`). Autonomous continuation counters and gate failures surface as extension state plus timeline items; a session cwd mismatch is reported as a one-shot warning item.
 - **Vendored bridge:** the SDK's `provider-bridge-acp.js` is vendored under `vendor/` with the dialect injected by `scripts/apply-dialect.py`, so rebuilds always carry it. After an SDK bump re-vendor:
 
   ```bash
@@ -17,11 +17,11 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
   python3 scripts/apply-dialect.py --check
   ```
 
-  `--check` fails loudly when the vendored file drifts from a fresh apply (e.g. the SDK layout changed and the script's anchors no longer match).
+  `--check` exits with an error when the vendored file drifts from a fresh apply, for example when the SDK layout changed and the script's anchors no longer match.
 - **CLI Commands:**
-  - `bb prime-agent status` — Inspect provider, launcher, and resolved binary status.
-  - `bb prime-agent models` — List discovered models with free model annotations.
-  - `bb prime-agent install --yes` — Download and install the official `prime-agent` binary.
+  - `bb prime-agent status` prints provider, launcher, and resolved binary status.
+  - `bb prime-agent models` lists discovered models and marks the free ones.
+  - `bb prime-agent install --yes` downloads and installs the official `prime-agent` binary.
 
 ## What the plugin runs
 
@@ -32,7 +32,7 @@ Run bb threads on [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent
 - The plugin itself makes no network calls from its own code. The only download is
   the explicit `bb prime-agent install --yes` command, which fetches
   <https://app.primeintellect.ai/prime-agent/install.sh> and runs it in a minimal
-  environment (PATH and HOME only — no daemon secrets are passed to the script).
+  environment (PATH and HOME only; the script receives no daemon secrets).
 
 ## Installation
 
@@ -69,8 +69,6 @@ bb prime-agent install --yes
 
 # List available models
 bb prime-agent models
-
-
 ```
 
 
@@ -80,15 +78,15 @@ bb prime-agent models
 
 This error comes from OpenRouter, not the plugin: your OpenRouter key hit its total usage limit. Replace the key or fund the workspace:
 
-- Edit `~/.prime/agent/auth.json` → `"openrouter"` → `"key"` govern new value, or
+- In `~/.prime/agent/auth.json`, set the `openrouter.key` field to the new key, or
 - set `OPENROUTER_API_KEY` in the environment bb starts from, or
-- run `prime-agent` on this machine and `/login` → OpenRouter.
+- run `prime-agent` on this machine and add an OpenRouter key with `/login`.
 
 ### `No API key found for openrouter` (right after a `403`)
 
 The key usually is still in `~/.prime/agent/auth.json`, but Prime Agent marks that exact key as stale in a long-running daemon after an auth failure, so later turns report it as missing. Fixes:
 
-- Replace the key with a **different value** (the stale mark is tied to the old value, so a new value clears it immediately), or
+- Replace the key with a different value (the stale mark is tied to the old value, so a new value clears it immediately), or
 - start a fresh bb thread (a fresh daemon has no stale mark), or
 - pick a free non-OpenRouter model like `opencode/hy3-free` in the bb model picker.
 

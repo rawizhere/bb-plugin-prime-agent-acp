@@ -1,16 +1,16 @@
 Run bb threads on Prime Agent (Prime Intellect's agent) through its native
-Agent Client Protocol server, with Prime Agent-specific surfaces rendered
+Agent Client Protocol server. The plugin renders Prime Agent surfaces
 natively in bb.
 
 ## What you get
 
-- A first-class `acp-prime-agent` provider in the bb model picker, backed by
-  your locally installed `prime-agent` binary.
+- An `acp-prime-agent` provider in the bb model picker, backed by your
+  locally installed `prime-agent` binary.
 - RLM subagents spawned by Prime Agent inside a turn appear as delegation
   items in the thread timeline: the child's session name, its model, and a
   live token count while it runs.
-- Goal state (objective, status, token budget, tokens used) is stored as
-  thread state and goal transitions appear as timeline items.
+- The plugin stores goal state (objective, status, token budget, tokens used)
+  as thread state, and goal transitions appear as timeline items.
 - Harness refinements, context compaction, and agent-to-agent message
   deliveries surface as timeline items instead of being dropped.
 
@@ -31,11 +31,11 @@ timeline deltas. See `dialect/prime-agent-dialect.js` and
   installed once with `bb prime-agent install --yes` (this downloads and runs
   Prime Intellect's official installer; the plugin itself makes no network
   calls from its own code).
-- Model traffic and API keys are yours: Prime Agent routes to the providers
-  you configure in it (OpenCode Zen, OpenRouter, custom providers).
+- Prime Agent routes model traffic to the providers you configure in it
+  (OpenCode Zen, OpenRouter, or a custom provider). You supply the API keys.
 
 ## CLI
 
-- `bb prime-agent status` — launcher and resolved binary status.
-- `bb prime-agent models` — models discovered by Prime Agent.
-- `bb prime-agent install --yes` — install the official binary.
+- `bb prime-agent status` prints launcher and resolved binary status.
+- `bb prime-agent models` lists the models Prime Agent discovers.
+- `bb prime-agent install --yes` installs the official binary.

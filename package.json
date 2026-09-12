@@ -4,7 +4,7 @@
   "type": "module",
   "engines": {
     "bb": ">=0.42",
-    "bbPluginSdk": ">=0.4.45"
+    "bbPluginSdk": ">=0.4.84"
   },
   "bb": {
     "name": "Prime Agent (ACP)",
@@ -16,7 +16,7 @@
     "host": "./host.ts"
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "^0.4.50",
+    "@get-bb/plugin-sdk": "^0.4.84",
     "zod": "^4.5.4"
   },
   "devDependencies": {

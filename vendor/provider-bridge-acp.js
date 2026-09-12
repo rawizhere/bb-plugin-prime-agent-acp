@@ -1,8 +1,8 @@
 // ============================================================================
 // VENDORED FILE -- DO NOT EDIT BY HAND.
-// Source: @get-bb/plugin-sdk@0.4.50 dist/provider-bridge-acp.js
+// Source: @get-bb/plugin-sdk@0.4.84 dist/provider-bridge-acp.js
 //         + prime-agent ACP dialect injected by scripts/apply-dialect.py
-// Generated: 2026-09-10
+// Generated: 2026-09-12
 // Re-generate after an SDK bump: see the header in scripts/apply-dialect.py
 // ============================================================================
 
@@ -2097,7 +2097,8 @@ var unscopedProviderEventSchema = z14.discriminatedUnion("type", [
         name: z14.string(),
         source: z14.union([
           z14.literal("shell"),
-          z14.object({ plugin: z14.string() }).strict()
+          z14.object({ plugin: z14.string() }).strict(),
+          z14.object({ core: z14.enum(["machine-git", "machine-environment"]) }).strict()
         ]),
         value: z14.union([
           z14.string(),
