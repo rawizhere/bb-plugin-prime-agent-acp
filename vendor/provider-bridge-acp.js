@@ -2,7 +2,7 @@
 // VENDORED FILE -- DO NOT EDIT BY HAND.
 // Source: @get-bb/plugin-sdk@0.4.84 dist/provider-bridge-acp.js
 //         + prime-agent ACP dialect injected by scripts/apply-dialect.py
-// Generated: 2026-09-12
+// Generated: 2026-09-17
 // Re-generate after an SDK bump: see the header in scripts/apply-dialect.py
 // ============================================================================
 
@@ -4979,6 +4979,12 @@ var OPENCODE_ACP_DIALECT = {
 //                   session info update
 //   heartbeatsChanged -> no-op, bb has no provider-agnostic heartbeat surface
 //
+// Intentionally ignored prime-agent meta fields (no bb surface, no action):
+//   terminalQuiescenceExpected: transient prompt-boundary marker tied to
+//                   turn settlement; the completion update already puts the
+//                   quiescence counters into the autonomous payload.
+//   heartbeatsChanged: see above.
+//
 // `sessionInfo(update)` returns plain-data actions; the bridge's
 // session_info_update case (PRIME_AGENT_ACP_DIALECT_V2) turns them into deltas
 // using translator-internal helpers. Kept dependency-free on purpose.
@@ -9277,10 +9283,127 @@ function getSessionByProviderThreadId(providerThreadId) {
   const bbThreadId = bbThreadIdByProviderThreadId.get(providerThreadId);
   return bbThreadId ? sessionsByBbThreadId.get(bbThreadId) : void 0;
 }
+// ============================================================================
+// PRIME_AGENT_KEEP_ALIVE (injected by scripts/apply-dialect.py)
+// ============================================================================
+
+var PRIME_AGENT_MIN_SUPPORTED_VERSION = "0.9.5";
+var PRIME_AGENT_IDLE_KEEP_TIMEOUT_MS = 45 * 60 * 1000;
+
+function primeAgentParseVersion(version) {
+  if (typeof version !== "string") {
+    return void 0;
+  }
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version.trim());
+  if (!match) {
+    return void 0;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function primeAgentVersionUnsupported(version) {
+  const parsed = primeAgentParseVersion(version);
+  const min = primeAgentParseVersion(PRIME_AGENT_MIN_SUPPORTED_VERSION);
+  if (parsed === void 0 || min === void 0) {
+    return false;
+  }
+  for (let i = 0; i < min.length; i++) {
+    if ((parsed[i] ?? 0) !== min[i]) {
+      return (parsed[i] ?? 0) < min[i];
+    }
+  }
+  return false;
+}
+
+function primeAgentCanReuseConstruction(previous, next) {
+  if (!primeAgentIsRecord(previous) || !primeAgentIsRecord(next)) {
+    return false;
+  }
+  for (const field of [
+    "cwd",
+    "agent",
+    "modelSelection",
+    "nativeReasoning",
+    "envVars",
+    "dialectId",
+    "dynamicTools",
+    "instructions"
+  ]) {
+    if (JSON.stringify(previous[field] ?? null) !== JSON.stringify(next[field] ?? null)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function interruptSession(session) {
+  if (session.stopping) {
+    return;
+  }
+  dropQueuedTurnInputs(
+    session,
+    "ACP session interrupted before the steer was sent"
+  );
+  cancelPendingPermissions(session);
+  if (session.activePromptKind !== null && !session.connection.exited) {
+    session.connection.notify("session/cancel", {
+      sessionId: session.providerThreadId
+    });
+    if (session.turnSettled) {
+      await Promise.race([
+        session.turnSettled,
+        new Promise(
+          (resolveTimeout) => setTimeout(resolveTimeout, THREAD_STOP_CANCEL_TIMEOUT_MS)
+        )
+      ]);
+    }
+  }
+  settleInterruptedPrompt(session);
+  // Keep the process (and the in-agent session history) alive; the idle reaper
+  // below reaps it if the thread is never resumed.
+  session.primeAgentIdleKeptAt = Date.now();
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const keptSession of [...sessionsByBbThreadId.values()]) {
+    if (keptSession.primeAgentIdleKeptAt === void 0) {
+      continue;
+    }
+    if (keptSession.activePromptKind !== null || keptSession.queuedInputs.length > 0) {
+      keptSession.primeAgentIdleKeptAt = now;
+      continue;
+    }
+    if (now - keptSession.primeAgentIdleKeptAt > PRIME_AGENT_IDLE_KEEP_TIMEOUT_MS) {
+      keptSession.primeAgentIdleKeptAt = void 0;
+      void stopSession(keptSession);
+    }
+  }
+}, 60 * 1000).unref();
+
 async function startAgentSession(request) {
   const params = request.params;
   const bbThreadId = params.threadId;
   const existing = sessionsByBbThreadId.get(bbThreadId);
+  if (
+    existing &&
+    request.kind === "resume" &&
+    typeof request.resumeProviderThreadId === "string" &&
+    existing.providerThreadId === request.resumeProviderThreadId &&
+    existing.providerThreadId !== "" &&
+    !existing.stopping &&
+    !existing.connection.exited &&
+    existing.activePromptKind === null &&
+    primeAgentCanReuseConstruction(existing.construction, params)
+  ) {
+    existing.primeAgentIdleKeptAt = void 0;
+    sendNotification(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
+      threadId: bbThreadId,
+      providerThreadId: existing.providerThreadId,
+      sessionRestorable: existing.supportsLoadSession
+    });
+    return existing;
+  }
   if (existing) {
     await stopSession(existing);
   }
@@ -9386,6 +9509,14 @@ async function startAgentSession(request) {
       initializeResult
     });
     session.supportsImageInput = initializeResult.agentCapabilities?.promptCapabilities?.image ?? false;
+    const primeAgentAgentInfo = primeAgentIsRecord(initializeResult.agentInfo) ? initializeResult.agentInfo : void 0;
+    const primeAgentAgentVersion = primeAgentIsRecord(primeAgentAgentInfo) && typeof primeAgentAgentInfo.version === "string" ? primeAgentAgentInfo.version : void 0;
+    if (primeAgentVersionUnsupported(primeAgentAgentVersion)) {
+      emitStartNotification(ACP_WARNING_METHOD, {
+        threadId: bbThreadId,
+        summary: `Prime Agent ${primeAgentAgentVersion} is older than the minimum supported ${PRIME_AGENT_MIN_SUPPORTED_VERSION}; update with \`bb prime-agent install --yes\`.`
+      });
+    }
     const supportsLoadSession = initializeResult.agentCapabilities?.loadSession ?? false;
     const supportsFork = initializeResult.agentCapabilities?.sessionCapabilities?.fork != null;
     if (request.kind === "fork" && !supportsFork) {
@@ -10147,7 +10278,9 @@ async function handleRequest2(request) {
         if (request.params.intent === "release") {
           await releaseSession(session);
         } else {
-          await stopSession(session);
+          // PRIME_AGENT_KEEP_ALIVE: interrupt keeps the live session; kill only
+          // on release (archive/delete).
+          await interruptSession(session);
         }
       }
       sendResult(request.id, { ok: true });

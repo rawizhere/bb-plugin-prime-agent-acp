@@ -8,6 +8,11 @@ dialects (generic/cursor/grok). We inject dialect/prime-agent-dialect.js into
 the vendored copy so every `bb plugin build`/reload rebuild includes it
 natively -- no post-build patching.
 
+The script also applies lifecycle patches to the vendored bridge
+(PRIME_AGENT_KEEP_ALIVE). Interrupt-stops keep the agent process alive, a
+matching resume reuses it, and initialize agentInfo.version is checked against
+PRIME_AGENT_MIN_SUPPORTED_VERSION. See the KEEP_ALIVE_HELPERS block below.
+
 Usage:
     python3 scripts/apply-dialect.py          # apply to vendor/provider-bridge-acp.js
     python3 scripts/apply-dialect.py --check  # verify vendor/ matches a fresh apply
@@ -163,6 +168,192 @@ SESSION_NEW_HOOK = """      sessionId = newSession.sessionId;
       }
       await selectAcpNativeModel({"""
 
+# --- PRIME_AGENT_KEEP_ALIVE -------------------------------------------------
+# Interrupt-stops (the bb Stop button sends thread/stop with intent
+# "interrupt") keep the agent process and its in-agent session history alive;
+# the next thread/start with kind:"resume" and the same providerThreadId
+# reuses the live session instead of spawning a replacement without history.
+# prime-agent advertises loadSession:false, so without this patch every Stop
+# discards the agent's conversation context. An idle reaper reaps
+# interrupt-kept processes that are never resumed. The helpers block also
+# carries the minimum-version check (the bridge ignores initialize
+# agentInfo.version, which only travels through the schema).
+KEEP_ALIVE_HELPERS = r"""// ============================================================================
+// PRIME_AGENT_KEEP_ALIVE (injected by scripts/apply-dialect.py)
+// ============================================================================
+
+var PRIME_AGENT_MIN_SUPPORTED_VERSION = "0.9.5";
+var PRIME_AGENT_IDLE_KEEP_TIMEOUT_MS = 45 * 60 * 1000;
+
+function primeAgentParseVersion(version) {
+  if (typeof version !== "string") {
+    return void 0;
+  }
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(version.trim());
+  if (!match) {
+    return void 0;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function primeAgentVersionUnsupported(version) {
+  const parsed = primeAgentParseVersion(version);
+  const min = primeAgentParseVersion(PRIME_AGENT_MIN_SUPPORTED_VERSION);
+  if (parsed === void 0 || min === void 0) {
+    return false;
+  }
+  for (let i = 0; i < min.length; i++) {
+    if ((parsed[i] ?? 0) !== min[i]) {
+      return (parsed[i] ?? 0) < min[i];
+    }
+  }
+  return false;
+}
+
+function primeAgentCanReuseConstruction(previous, next) {
+  if (!primeAgentIsRecord(previous) || !primeAgentIsRecord(next)) {
+    return false;
+  }
+  for (const field of [
+    "cwd",
+    "agent",
+    "modelSelection",
+    "nativeReasoning",
+    "envVars",
+    "dialectId",
+    "dynamicTools",
+    "instructions"
+  ]) {
+    if (JSON.stringify(previous[field] ?? null) !== JSON.stringify(next[field] ?? null)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function interruptSession(session) {
+  if (session.stopping) {
+    return;
+  }
+  dropQueuedTurnInputs(
+    session,
+    "ACP session interrupted before the steer was sent"
+  );
+  cancelPendingPermissions(session);
+  if (session.activePromptKind !== null && !session.connection.exited) {
+    session.connection.notify("session/cancel", {
+      sessionId: session.providerThreadId
+    });
+    if (session.turnSettled) {
+      await Promise.race([
+        session.turnSettled,
+        new Promise(
+          (resolveTimeout) => setTimeout(resolveTimeout, THREAD_STOP_CANCEL_TIMEOUT_MS)
+        )
+      ]);
+    }
+  }
+  settleInterruptedPrompt(session);
+  // Keep the process (and the in-agent session history) alive; the idle reaper
+  // below reaps it if the thread is never resumed.
+  session.primeAgentIdleKeptAt = Date.now();
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const keptSession of [...sessionsByBbThreadId.values()]) {
+    if (keptSession.primeAgentIdleKeptAt === void 0) {
+      continue;
+    }
+    if (keptSession.activePromptKind !== null || keptSession.queuedInputs.length > 0) {
+      keptSession.primeAgentIdleKeptAt = now;
+      continue;
+    }
+    if (now - keptSession.primeAgentIdleKeptAt > PRIME_AGENT_IDLE_KEEP_TIMEOUT_MS) {
+      keptSession.primeAgentIdleKeptAt = void 0;
+      void stopSession(keptSession);
+    }
+  }
+}, 60 * 1000).unref();
+
+"""
+
+START_AGENT_HEAD_ANCHOR = """async function startAgentSession(request) {
+  const params = request.params;
+  const bbThreadId = params.threadId;
+  const existing = sessionsByBbThreadId.get(bbThreadId);
+  if (existing) {
+    await stopSession(existing);
+  }"""
+
+START_AGENT_HEAD_REPLACED = KEEP_ALIVE_HELPERS + START_AGENT_HEAD_ANCHOR.replace(
+    """  if (existing) {
+    await stopSession(existing);
+  }""",
+    """  if (
+    existing &&
+    request.kind === "resume" &&
+    typeof request.resumeProviderThreadId === "string" &&
+    existing.providerThreadId === request.resumeProviderThreadId &&
+    existing.providerThreadId !== "" &&
+    !existing.stopping &&
+    !existing.connection.exited &&
+    existing.activePromptKind === null &&
+    primeAgentCanReuseConstruction(existing.construction, params)
+  ) {
+    existing.primeAgentIdleKeptAt = void 0;
+    sendNotification(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
+      threadId: bbThreadId,
+      providerThreadId: existing.providerThreadId,
+      sessionRestorable: existing.supportsLoadSession
+    });
+    return existing;
+  }
+  if (existing) {
+    await stopSession(existing);
+  }""",
+)
+
+THREAD_STOP_CASE_ANCHOR = """    case "thread/stop": {
+      const session = sessionsByBbThreadId.get(request.params.threadId);
+      if (session) {
+        if (request.params.intent === "release") {
+          await releaseSession(session);
+        } else {
+          await stopSession(session);
+        }
+      }
+      sendResult(request.id, { ok: true });
+      return;
+    }"""
+
+THREAD_STOP_CASE_REPLACED = """    case "thread/stop": {
+      const session = sessionsByBbThreadId.get(request.params.threadId);
+      if (session) {
+        if (request.params.intent === "release") {
+          await releaseSession(session);
+        } else {
+          // PRIME_AGENT_KEEP_ALIVE: interrupt keeps the live session; kill only
+          // on release (archive/delete).
+          await interruptSession(session);
+        }
+      }
+      sendResult(request.id, { ok: true });
+      return;
+    }"""
+
+IMAGE_SUPPORT_ANCHOR = """    session.supportsImageInput = initializeResult.agentCapabilities?.promptCapabilities?.image ?? false;"""
+
+IMAGE_SUPPORT_REPLACED = IMAGE_SUPPORT_ANCHOR + r"""
+    const primeAgentAgentInfo = primeAgentIsRecord(initializeResult.agentInfo) ? initializeResult.agentInfo : void 0;
+    const primeAgentAgentVersion = primeAgentIsRecord(primeAgentAgentInfo) && typeof primeAgentAgentInfo.version === "string" ? primeAgentAgentInfo.version : void 0;
+    if (primeAgentVersionUnsupported(primeAgentAgentVersion)) {
+      emitStartNotification(ACP_WARNING_METHOD, {
+        threadId: bbThreadId,
+        summary: `Prime Agent ${primeAgentAgentVersion} is older than the minimum supported ${PRIME_AGENT_MIN_SUPPORTED_VERSION}; update with \`bb prime-agent install --yes\`.`
+      });
+    }"""
+
 HEADER_RULE = "=" * 76
 
 
@@ -213,8 +404,21 @@ def build_patched_source(dialect_source: str, sdk_source: str) -> str:
             "the SDK layout changed -- re-review scripts/apply-dialect.py anchors"
         )
     patched = patched.replace(SESSION_NEW_ANCHOR, SESSION_NEW_HOOK, 1)
+    for anchor_name, anchor, replaced in (
+        ("startAgentSession head", START_AGENT_HEAD_ANCHOR, START_AGENT_HEAD_REPLACED),
+        ("thread/stop case", THREAD_STOP_CASE_ANCHOR, THREAD_STOP_CASE_REPLACED),
+        ("image support line", IMAGE_SUPPORT_ANCHOR, IMAGE_SUPPORT_REPLACED),
+    ):
+        if patched.count(anchor) != 1:
+            raise SystemExit(
+                f"{anchor_name} anchor not unique ({patched.count(anchor)}); "
+                "the SDK layout changed -- re-review scripts/apply-dialect.py anchors"
+            )
+        patched = patched.replace(anchor, replaced, 1)
     if V3_MARKER not in patched:
         raise SystemExit("post-patch invariant failed: V3 marker missing")
+    if "PRIME_AGENT_KEEP_ALIVE" not in patched:
+        raise SystemExit("post-patch invariant failed: keep-alive patch missing")
     return patched
 
 

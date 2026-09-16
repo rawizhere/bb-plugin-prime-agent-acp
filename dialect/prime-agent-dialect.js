@@ -37,6 +37,12 @@
 //                   session info update
 //   heartbeatsChanged -> no-op, bb has no provider-agnostic heartbeat surface
 //
+// Intentionally ignored prime-agent meta fields (no bb surface, no action):
+//   terminalQuiescenceExpected: transient prompt-boundary marker tied to
+//                   turn settlement; the completion update already puts the
+//                   quiescence counters into the autonomous payload.
+//   heartbeatsChanged: see above.
+//
 // `sessionInfo(update)` returns plain-data actions; the bridge's
 // session_info_update case (PRIME_AGENT_ACP_DIALECT_V2) turns them into deltas
 // using translator-internal helpers. Kept dependency-free on purpose.

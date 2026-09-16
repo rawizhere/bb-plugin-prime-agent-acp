@@ -51,6 +51,17 @@ function installLauncherOnPath(): string {
   return `WARNING: could not install ${LAUNCHER_NAME} launcher onto PATH; threads on this machine will not start`;
 }
 
+// Resolve the installed prime-agent binary via PATH (the launcher execs the
+// binary for ACP runs only; management commands must call the binary itself).
+async function resolvePrimeAgentBinary(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("which", ["prime-agent"]);
+    return stdout.split(/\r?\n/u)[0]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export default async function plugin(bb: BbPluginApi) {
   bb.providers.register({
     id: "acp-prime-agent",
@@ -76,6 +87,9 @@ export default async function plugin(bb: BbPluginApi) {
       supportsThreadRename: true,
       fork: "none",
       permissionModes: ["accept-edits", "full"],
+      // "minimal" is a valid prime-agent --thinking level but bb's
+      // PluginProviderReasoningLevel union has no such member (0.4.84), so it
+      // cannot be declared here until bb extends the vocabulary.
       reasoningLevels: ["none", "low", "medium", "high", "xhigh", "max"],
     },
     composerActions: [],
@@ -170,6 +184,16 @@ export default async function plugin(bb: BbPluginApi) {
         summary: "Download and install the official Prime Agent binary (requires --yes)",
         usage: "bb prime-agent install --yes",
       },
+      {
+        name: "sessions",
+        summary: "List Prime Agent sessions and running agents",
+        usage: "bb prime-agent sessions [--all] [--json]",
+      },
+      {
+        name: "doctor",
+        summary: "Inspect and clean up Prime Agent background services",
+        usage: "bb prime-agent doctor [--fix] [--json]",
+      },
     ],
     async run(argv) {
       const json = argv.includes("--json");
@@ -231,14 +255,77 @@ export default async function plugin(bb: BbPluginApi) {
         }
       }
 
-      // Default to status command
-      let resolvedBinary: string | null = null;
-      try {
-        const { stdout } = await execFileAsync("which", ["prime-agent"]);
-        resolvedBinary = stdout.split(/\r?\n/u)[0]?.trim() ?? null;
-      } catch {
-        resolvedBinary = null;
+      if (cmd === "sessions") {
+        const bin = await resolvePrimeAgentBinary();
+        if (!bin) {
+          return {
+            exitCode: 1,
+            stderr: "Prime Agent is not installed. Run `bb prime-agent install --yes` first.",
+            stdout: "",
+          };
+        }
+        const listArgs = ["list"];
+        if (argv.includes("--all")) listArgs.push("--all");
+        listArgs.push("--json");
+        try {
+          const { stdout } = await execFileAsync(bin, listArgs);
+          if (json) {
+            return { exitCode: 0, stdout, stderr: "" };
+          }
+          const parsed = JSON.parse(stdout) as { sessions?: unknown[] };
+          const sessions = Array.isArray(parsed.sessions) ? parsed.sessions : [];
+          if (sessions.length === 0) {
+            return { exitCode: 0, stdout: "No Prime Agent sessions.", stderr: "" };
+          }
+          const lines = sessions.map((raw) => {
+            const row = (raw ?? {}) as Record<string, any>;
+            const id = typeof row.id === "string" ? row.id : "?";
+            const lifecycle = typeof row.lifecycle === "string" ? row.lifecycle : "?";
+            const activity = typeof row.activity === "string" ? row.activity : "?";
+            const model =
+              row.model && typeof row.model === "object" && typeof (row.model as any).id === "string"
+                ? (row.model as any).id
+                : "?";
+            const cwd = typeof row.cwd === "string" ? row.cwd : "";
+            return `${id}  ${lifecycle}/${activity}  ${model}  ${cwd}`;
+          });
+          return { exitCode: 0, stdout: lines.join("\n"), stderr: "" };
+        } catch (err: any) {
+          return {
+            exitCode: 1,
+            stderr: `Failed to list Prime Agent sessions: ${err.message ?? err}`,
+            stdout: "",
+          };
+        }
       }
+
+      if (cmd === "doctor") {
+        const bin = await resolvePrimeAgentBinary();
+        if (!bin) {
+          return {
+            exitCode: 1,
+            stderr: "Prime Agent is not installed. Run `bb prime-agent install --yes` first.",
+            stdout: "",
+          };
+        }
+        const doctorArgs = ["doctor"];
+        if (argv.includes("--fix")) doctorArgs.push("--fix");
+        if (json) doctorArgs.push("--json");
+        try {
+          const { stdout } = await execFileAsync(bin, doctorArgs);
+          return { exitCode: 0, stdout, stderr: "" };
+        } catch (err: any) {
+          // doctor exits non-zero when it finds problems; pass its output through.
+          return {
+            exitCode: typeof err?.code === "number" ? err.code : 1,
+            stdout: err?.stdout?.toString?.() ?? "",
+            stderr: err?.stderr?.toString?.() ?? `Failed to run Prime Agent doctor: ${err.message ?? err}`,
+          };
+        }
+      }
+
+      // Default to status command
+      const resolvedBinary = await resolvePrimeAgentBinary();
 
       let launcherOnPath: string | null = null;
       try {
@@ -248,6 +335,30 @@ export default async function plugin(bb: BbPluginApi) {
         launcherOnPath = null;
       }
 
+      let primeAgentVersion: string | null = null;
+      let daemonStatus: unknown = null;
+      let runningAgentCount: number | null = null;
+      if (resolvedBinary !== null) {
+        try {
+          primeAgentVersion = (await execFileAsync(resolvedBinary, ["--version"])).stdout.trim() || null;
+        } catch {
+          primeAgentVersion = null;
+        }
+        try {
+          daemonStatus = JSON.parse((await execFileAsync(resolvedBinary, ["status", "--json"])).stdout);
+        } catch {
+          daemonStatus = null;
+        }
+        try {
+          const listed = JSON.parse((await execFileAsync(resolvedBinary, ["list", "--json"])).stdout) as {
+            sessions?: unknown[];
+          };
+          runningAgentCount = Array.isArray(listed.sessions) ? listed.sessions.length : null;
+        } catch {
+          runningAgentCount = null;
+        }
+      }
+
       const status = {
         providerId: "acp-prime-agent",
         displayName: "Prime Agent",
@@ -255,6 +366,9 @@ export default async function plugin(bb: BbPluginApi) {
         launcherName: LAUNCHER_NAME,
         launcherOnPath,
         resolvedBinary,
+        primeAgentVersion,
+        daemon: daemonStatus,
+        runningAgents: runningAgentCount,
         ready: resolvedBinary !== null && launcherOnPath !== null,
         hint:
           resolvedBinary === null
@@ -274,6 +388,13 @@ export default async function plugin(bb: BbPluginApi) {
               `launcher:       ${status.launcher}`,
               `launcherOnPath: ${status.launcherOnPath ?? "NOT ON PATH"}`,
               `resolvedBinary: ${status.resolvedBinary ?? "NOT FOUND"}`,
+              `version:        ${status.primeAgentVersion ?? "UNKNOWN"}`,
+              `daemon:         ${
+                Array.isArray(status.daemon) && status.daemon.length > 0
+                  ? `RUNNING (pid ${(status.daemon as any[])[0]?.pid ?? "?"}, sessions ${(status.daemon as any[])[0]?.sessionCount ?? "?"})`
+                  : "NOT RUNNING"
+              }`,
+              `runningAgents:  ${status.runningAgents ?? "UNKNOWN"}`,
               `status:         ${status.ready ? "READY" : "MISSING BINARY"}`,
               "",
               status.hint,
